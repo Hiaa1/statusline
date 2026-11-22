@@ -8,7 +8,9 @@
 statusline/
 ├── agy/
 │   ├── statusline.py          # Antigravity CLI 单行状态栏脚本（Python 3 零依赖）
-│   └── settings.example.json  # ~/.gemini/antigravity-cli/settings.json 配置片段示例
+│   ├── settings.example.json  # ~/.gemini/antigravity-cli/settings.json 配置片段示例
+│   └── assets/
+│       └── preview.png        # 终端渲染效果预览（浅色主题 256 色）
 └── pi/
     └── extensions/
         └── cny-footer.ts      # pi coding agent 自定义底部栏扩展（TypeScript）
@@ -19,6 +21,8 @@ statusline/
 ## 1. Antigravity CLI (`agy/`)
 
 浅色主题（Light / Solarized Light）友好的 256 色 ANSI 单行状态栏，按**指标类型**与**当前数值区间**双维度着色，支持 `NO_COLOR` 环境变量降级与异常兜底。
+
+![agy statusline preview](./agy/assets/preview.png)
 
 显示顺序：
 
