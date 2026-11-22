@@ -24,12 +24,15 @@ statusline/
 
 浅色主题（Light / Solarized Light）友好的 256 色 ANSI 单行状态栏，按**指标类型**与**当前数值区间**双维度着色，支持 `NO_COLOR` 环境变量降级与异常兜底。
 
+- **精准测速**：`tool_use`（跑命令 / 搜索）期间自动暂停计时，避免工具耗时拉低 `t/s`；采用近期采样 token 加权均值。
+- **编排模式分模型测速**：选择 `Orchestrator (Neon / Argon / Carbon)` 时，增量读取 `transcript_path` 尾部按底层真实模型分桶统计，紧凑显示为 `N~85/H~150t/s`（Planner 置前、Executor 置后，各自独立着色；仅单角色运行过时显示 `N~85t/s`）。
+
 ![agy statusline preview](./agy/assets/preview.png)
 
 显示顺序：
 
 ```text
-cwd · 5h配额 · week配额 · ctx占用 · cache命中 · ~t/s速度 · 模型(思考档位)
+cwd · 5h配额 · week配额 · ctx占用 · cache命中 · ~t/s速度（或 N~85/H~150t/s） · 模型(思考档位)
 ```
 
 ### 配色规则（256 色 ANSI）
@@ -42,7 +45,7 @@ cwd · 5h配额 · week配额 · ctx占用 · cache命中 · ~t/s速度 · 模�
 | **ctx 占用** | `<30%` 宝蓝 `25` | `30–59%` 靛紫 `56` | `60–79%` 深橙 `166` | `>=80%` **加粗红** `1;160` |
 | **cache 命中** | `>=80%` 梅紫 `126` | `50–79%` 暖棕 `130` | `<50%` 砖红 `124` | 无数据淡灰 `244` |
 | **~t/s 速度** | `<25` 淡灰 `243` | `25–59` 铜棕 `94` | `60–119` 琥珀橙 `166` | `>=120` **加粗翠绿** `1;29` |
-| **model** | Neon/Pro 靛紫 `55` · Flash 青蓝 `31` · Claude 暖陶橙 `130` · GPT 墨绿 `22` | — | — | 档位：`(XHigh)` **加粗莓红** `1;125` · `(High/Thinking)` **家族加粗** · `(Medium)` 柔蓝紫 `61` · `(Low)` 淡灰 `244` |
+| **model** | Orchestrator 蓝紫 `61` · Neon/Pro/Argon/Carbon 靛紫 `55` · Flash/Hydrogen 青蓝 `31` · Claude 暖陶橙 `130` · GPT 墨绿 `22` | — | — | 档位 / Planner：`(XHigh)` **加粗莓红** `1;125` · `(High/Thinking)` **家族加粗** · `(Medium)` 柔蓝紫 `61` · `(Low)` 淡灰 `244` |
 
 ### 安装
 
