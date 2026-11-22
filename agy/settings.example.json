@@ -1,0 +1,8 @@
+{
+  "colorScheme": "light",
+  "statusLine": {
+    "type": "command",
+    "command": "/usr/bin/python3 /ABSOLUTE/PATH/TO/.gemini/antigravity-cli/statusline.py",
+    "enabled": true
+  }
+}
