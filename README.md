@@ -12,8 +12,10 @@ statusline/
 │   └── assets/
 │       └── preview.png        # 终端渲染效果预览（浅色主题 256 色）
 └── pi/
-    └── extensions/
-        └── cny-footer.ts      # pi coding agent 自定义底部栏扩展（TypeScript）
+    ├── extensions/
+    │   └── cny-footer.ts      # pi coding agent 自定义底部栏扩展（TypeScript）
+    └── assets/
+        └── preview.png        # 终端渲染效果预览（Catppuccin Latte 主题）
 ```
 
 ---
@@ -67,6 +69,8 @@ chmod +x ~/.gemini/antigravity-cli/statusline.py
 ## 2. pi coding agent (`pi/`)
 
 `pi/extensions/cny-footer.ts` 为 pi coding agent 的双行自定义底部状态栏扩展：
+
+![pi statusline preview](./pi/assets/preview.png)
 
 - **第一行**：工作目录 (`~` 缩写) + Git 分支 + 会话名（窄屏依次自动降级）
 - **第二行**：`context │ speed │ hit │ cost` + 右侧模型名与思考等级
