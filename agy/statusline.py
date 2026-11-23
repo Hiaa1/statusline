@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 
 STATE_DIR = "/tmp"
 GEN_STATES = {"working", "thinking", "streaming", "generating"}
@@ -15,6 +16,58 @@ MAX_SAMPLES = 6   # 每个底层模型保留最近 N 条采样做 token 加权�
 MAX_SPAN_SEC = 600.0
 MIN_SPAN_SEC = 0.2
 MAX_READ_BYTES = 262144
+WIDTH_MARGIN = 4  # 为 agy TUI 左右内边距预留列数，避免窄屏折行
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+# ---------- 可见宽度与截断 ----------
+def char_width(ch):
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def visible_width(text):
+    return sum(char_width(ch) for ch in ANSI_RE.sub("", text))
+
+
+def truncate_ansi(text, max_width):
+    """按可见列宽安全截断带 ANSI 颜色的字符串，避免残留未闭合转义符。"""
+    if max_width <= 0:
+        return ""
+    if visible_width(text) <= max_width:
+        return text
+    if max_width == 1:
+        return "…"
+    budget = max_width - 1
+    out = []
+    used = 0
+    has_ansi = False
+    pos = 0
+    for m in ANSI_RE.finditer(text):
+        seg = text[pos:m.start()]
+        for ch in seg:
+            w = char_width(ch)
+            if used + w > budget:
+                out.append("…")
+                if has_ansi:
+                    out.append("\x1b[0m")
+                return "".join(out)
+            out.append(ch)
+            used += w
+        out.append(m.group(0))
+        has_ansi = m.group(0) != "\x1b[0m"
+        pos = m.end()
+    for ch in text[pos:]:
+        w = char_width(ch)
+        if used + w > budget:
+            out.append("…")
+            if has_ansi:
+                out.append("\x1b[0m")
+            return "".join(out)
+        out.append(ch)
+        used += w
+    return "".join(out)
 
 
 # ---------- 格式化 ----------
@@ -32,6 +85,11 @@ def fmt_tokens(n):
     return f"{n / 1_000_000:.1f}M"
 
 
+def fmt_tokens_tight(n):
+    s = fmt_tokens(n)
+    return s[:-3] + "M" if s.endswith(".0M") else s
+
+
 def fmt_cwd(path):
     home = os.path.expanduser("~")
     if not path:
@@ -46,6 +104,18 @@ def fmt_cwd(path):
         return "~/" + rel
     parts = [p for p in path.split(os.sep) if p]
     return "/…/" + "/".join(parts[-2:]) if len(parts) > 2 else path
+
+
+def fmt_cwd_short(path, max_len=16):
+    home = os.path.expanduser("~")
+    if not path:
+        return "?"
+    if path == home:
+        return "~"
+    base = os.path.basename(path.rstrip(os.sep)) or path
+    if visible_width(base) > max_len:
+        return truncate_ansi(base, max_len)
+    return base
 
 
 def shorten_model(model):
@@ -490,17 +560,22 @@ def color_rate(rate):
     return "38;5;243"
 
 
-def format_rates(is_orch, rates, use_color):
+def format_rates(is_orch, rates, use_color, compact=False):
     if not rates:
         return None
     if not is_orch:
         _, r = rates[0]
-        return color(color_rate(r), f"~{r:.0f}t/s", use_color)
+        txt = f"{r:.0f}t/s" if compact else f"~{r:.0f}t/s"
+        return color(color_rate(r), txt, use_color)
     chunks = []
     last_idx = len(rates) - 1
     for i, (tag, r) in enumerate(rates):
-        suffix = "t/s" if i == last_idx else ""
-        chunks.append(color(color_rate(r), f"{tag}~{r:.0f}{suffix}", use_color))
+        if compact:
+            txt = f"{tag}{r:.0f}"
+        else:
+            suffix = "t/s" if i == last_idx else ""
+            txt = f"{tag}~{r:.0f}{suffix}"
+        chunks.append(color(color_rate(r), txt, use_color))
     slash = color(DIM, "/", use_color)
     return slash.join(chunks)
 
@@ -522,103 +597,226 @@ def model_family_color(model):
     return "38;5;24"
 
 
-def format_model(model, use_color):
+def _model_tier_code(model, base_code, tier):
+    if is_orchestrator_model(model):
+        if "neon" in tier:
+            return "1;38;5;55"
+        if "carbon" in tier:
+            return "1;38;5;125"
+        if "argon" in tier:
+            return "1;38;5;25"
+        if "opus" in tier:
+            return "1;38;5;130"
+        return f"1;{base_code}"
+    if any(k in tier for k in ("xhigh", "max", "ultra")):
+        return "1;38;5;125"
+    if any(k in tier for k in ("high", "thinking")):
+        return f"1;{base_code}"
+    if "med" in tier:
+        return "38;5;61"
+    if any(k in tier for k in ("low", "min", "fast")):
+        return DIM
+    return base_code
+
+
+def _shorten_base_for_narrow(base):
+    low = base.lower().strip()
+    if "orchestrator" in low:
+        return "Orch"
+    if "sonnet" in low:
+        return "Sonnet"
+    if "opus" in low:
+        return "Opus"
+    if "haiku" in low:
+        return "Haiku"
+    if "gpt" in low:
+        return "GPT"
+    if "hydrogen" in low:
+        return "Hyd"
+    if "flash" in low and "lite" in low:
+        return "FlashL"
+    if "flash" in low:
+        return "Flash"
+    return base.strip()
+
+
+def _shorten_tier_for_narrow(model, tier):
+    if is_orchestrator_model(model):
+        for k, v in (("neon", "N"), ("carbon", "C"), ("argon", "A"), ("opus", "O")):
+            if k in tier:
+                return f"({v})"
+        return f"({tier[:1].upper()})" if tier else ""
+    if any(k in tier for k in ("xhigh", "extra")):
+        return "(XH)"
+    if "max" in tier:
+        return "(Max)"
+    if "high" in tier:
+        return "(H)"
+    if "thinking" in tier:
+        return "(T)"
+    if "med" in tier:
+        return "(M)"
+    if "min" in tier:
+        return "(Min)"
+    if "low" in tier:
+        return "(L)"
+    return f"({tier[:2].upper()})" if tier else ""
+
+
+def format_model(model, use_color, compact=False):
     label = shorten_model(model)
     base_code = model_family_color(model)
     m = re.match(r"^(.+?)(\s*\([^)]+\))\s*$", label)
     if not m:
-        return color(base_code, label, use_color)
+        txt = _shorten_base_for_narrow(label) if compact else label
+        return color(base_code, txt, use_color)
     base, tier_raw = m.group(1), m.group(2)
     tier = tier_raw.strip(" ()").lower()
-    if is_orchestrator_model(model):
-        if "neon" in tier:
-            tier_code = "1;38;5;55"
-        elif "carbon" in tier:
-            tier_code = "1;38;5;125"
-        elif "argon" in tier:
-            tier_code = "1;38;5;25"
-        elif "opus" in tier:
-            tier_code = "1;38;5;130"
-        else:
-            tier_code = f"1;{base_code}"
-    elif any(k in tier for k in ("xhigh", "max", "ultra")):
-        tier_code = "1;38;5;125"
-    elif any(k in tier for k in ("high", "thinking")):
-        tier_code = f"1;{base_code}"
-    elif "med" in tier:
-        tier_code = "38;5;61"
-    elif any(k in tier for k in ("low", "min", "fast")):
-        tier_code = DIM
-    else:
-        tier_code = base_code
+    tier_code = _model_tier_code(model, base_code, tier)
+    if compact:
+        base = _shorten_base_for_narrow(base)
+        tier_raw = _shorten_tier_for_narrow(model, tier)
     return color(base_code, base, use_color) + color(tier_code, tier_raw, use_color)
+
+
+def _window_label_compact(key):
+    lbl = window_label(key)
+    return "wk" if lbl == "week" else lbl
+
+
+def _format_quota_merged(qitems, use_color):
+    if not qitems:
+        return None
+    if len(qitems) == 1:
+        k, p = qitems[0]
+        return color(color_quota(k, p), f"{p:.0f}%", use_color)
+    (k1, p1), (k2, p2) = qitems[0], qitems[1]
+    return (
+        color(color_quota(k1, p1), f"{p1:.0f}", use_color)
+        + color(DIM, "/", use_color)
+        + color(color_quota(k2, p2), f"{p2:.0f}%", use_color)
+    )
 
 
 def build(payload):
     use_color = not os.environ.get("NO_COLOR")
-    sep = f"\x1b[{DIM}m · \x1b[0m" if use_color else " · "
+    sep_full = f"\x1b[{DIM}m · \x1b[0m" if use_color else " · "
+    sep_tight = " "
 
-    # 顺序：cwd → quota(5h/week) → ctx → cache → t/s → 模型
-    parts = []
+    # ---- 收集原始指标数据 ----
+    cwd_raw = (payload.get("workspace") or {}).get("current_dir") or payload.get("cwd") or ""
+    model = payload.get("model")
+    model_id = (model or {}).get("id", "")
 
-    # 工作目录
-    cwd = (payload.get("workspace") or {}).get("current_dir") or payload.get("cwd") or ""
-    parts.append(color(CWD_COLOR, fmt_cwd(cwd), use_color))
-
-    # Quota：短窗口 + 周窗口，形如 97% 5h · 100% week
-    model_id = (payload.get("model") or {}).get("id", "")
+    # Quota：短窗口 + 周窗口
+    qitems = []
     qkey, qb = pick_quota(payload.get("quota"), model_id)
     if qb is not None:
         for key, bucket in quota_windows(payload.get("quota"), qkey):
             try:
                 pct = max(0.0, min(1.0, float(bucket.get("remaining_fraction")))) * 100
-                code = color_quota(key, pct)
-                parts.append(color(code, f"{pct:.0f}% {window_label(key)}", use_color))
+                qitems.append((key, pct))
             except (TypeError, ValueError):
                 continue
 
     # 上下文
     cw = payload.get("context_window") or {}
+    ctx_info = None
     try:
         size = float(cw.get("context_window_size") or 0)
         pct = float(cw.get("used_percentage") or 0)
         if size > 0:
-            used = pct / 100.0 * size
-            label = f"ctx {fmt_tokens(used)}/{fmt_tokens(size)}"
-            parts.append(color(color_ctx(pct), label, use_color))
-        else:
-            parts.append(color(DIM, "ctx --", use_color))
+            ctx_info = (pct / 100.0 * size, size, pct)
     except (TypeError, ValueError):
-        parts.append(color(DIM, "ctx --", use_color))
+        ctx_info = None
 
     # 缓存命中率（最近一轮）
     cu = cw.get("current_usage") or {}
+    cache_hit = None
     try:
         cr = float(cu.get("cache_read_input_tokens") or 0)
         it = float(cu.get("input_tokens") or 0)
         cc = float(cu.get("cache_creation_input_tokens") or 0)
         denom = cr + it + cc
         if denom > 0:
-            hit = cr / denom * 100
-            parts.append(color(color_cache(hit), f"cache {hit:.0f}%", use_color))
-        else:
-            parts.append(color(DIM, "cache --", use_color))
+            cache_hit = cr / denom * 100
     except (TypeError, ValueError):
-        parts.append(color(DIM, "cache --", use_color))
+        cache_hit = None
 
     # 输出速度（按底层真实模型分桶估算，排除 tool_use 耗时）
+    is_orch, rates = False, []
     try:
         is_orch, rates = update_rates(payload)
-        rate_str = format_rates(is_orch, rates, use_color)
-        if rate_str:
-            parts.append(rate_str)
     except Exception:
         pass
 
-    # 模型名放最后
-    parts.append(format_model(payload.get("model"), use_color))
+    # ---- 按档位构造片段 ----
+    cwd_full = color(CWD_COLOR, fmt_cwd(cwd_raw), use_color)
+    cwd_short = color(CWD_COLOR, fmt_cwd_short(cwd_raw), use_color)
 
-    return sep.join(parts)
+    q_full = [color(color_quota(k, p), f"{p:.0f}% {window_label(k)}", use_color) for k, p in qitems]
+    q_compact = [color(color_quota(k, p), f"{p:.0f}% {_window_label_compact(k)}", use_color) for k, p in qitems]
+    q_merged = _format_quota_merged(qitems, use_color)
+    q_short_only = color(color_quota(qitems[0][0], qitems[0][1]), f"{qitems[0][1]:.0f}%", use_color) if qitems else None
+
+    if ctx_info is not None:
+        used, size, pct = ctx_info
+        c_code = color_ctx(pct)
+        ctx_full = color(c_code, f"ctx {fmt_tokens(used)}/{fmt_tokens(size)}", use_color)
+        ctx_compact = color(c_code, f"ctx {fmt_tokens_tight(used)}/{fmt_tokens_tight(size)}", use_color)
+        ctx_short = color(c_code, f"{fmt_tokens_tight(used)}/{fmt_tokens_tight(size)}", use_color)
+        ctx_pct = color(c_code, f"{pct:.0f}%", use_color)
+    else:
+        ctx_full = color(DIM, "ctx --", use_color)
+        ctx_compact = ctx_full
+        ctx_short = color(DIM, "ctx--", use_color)
+        ctx_pct = color(DIM, "--", use_color)
+
+    if cache_hit is not None:
+        h_code = color_cache(cache_hit)
+        cache_full = color(h_code, f"cache {cache_hit:.0f}%", use_color)
+        cache_short = color(h_code, f"c{cache_hit:.0f}%", use_color)
+    else:
+        cache_full = color(DIM, "cache --", use_color)
+        cache_short = color(DIM, "c--", use_color)
+
+    rate_full = format_rates(is_orch, rates, use_color, compact=False)
+    rate_short = format_rates(is_orch, rates, use_color, compact=True)
+    model_full = format_model(model, use_color, compact=False)
+    model_short = format_model(model, use_color, compact=True)
+
+    def join_nonempty(sep, seq):
+        return sep.join(x for x in seq if x)
+
+    # 档位 1：完整版（宽屏或未提供 terminal_width 时默认）
+    line_full = join_nonempty(sep_full, [cwd_full, *q_full, ctx_full, cache_full, rate_full, model_full])
+
+    try:
+        term_w = int(payload.get("terminal_width") or 0)
+    except (TypeError, ValueError):
+        term_w = 0
+    if term_w <= 0:
+        return line_full
+
+    avail = max(8, term_w - WIDTH_MARGIN)
+    if visible_width(line_full) <= avail:
+        return line_full
+
+    # 逐级降级：compact → short → nano（依次丢 cache → cwd → t/s → week）→ 极窄兜底
+    candidates = [
+        join_nonempty(sep_tight, [cwd_short, *q_compact, ctx_compact, cache_short, rate_full, model_full]),
+        join_nonempty(sep_tight, [cwd_short, q_merged, ctx_short, cache_short, rate_short, model_short]),
+        join_nonempty(sep_tight, [cwd_short, q_merged, ctx_short, rate_short, model_short]),
+        join_nonempty(sep_tight, [q_merged, ctx_short, rate_short, model_short]),
+        join_nonempty(sep_tight, [q_merged, ctx_short, model_short]),
+        join_nonempty(sep_tight, [q_short_only, ctx_pct, model_short]),
+        join_nonempty(sep_tight, [q_short_only, model_short]),
+        model_short,
+    ]
+    for cand in candidates:
+        if cand and visible_width(cand) <= avail:
+            return cand
+    return truncate_ansi(candidates[-1], avail)
 
 
 def main():

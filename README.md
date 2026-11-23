@@ -13,6 +13,7 @@ Single-line 256-color statusline for light themes (`Light` / `Solarized Light`),
 - **Type × value colors**: distinct color families for `cwd`, `5h`, `week`, `ctx`, `cache`, `t/s`, and `model` (+ thinking tier).
 - **Accurate speed**: pauses timing during `tool_use` and uses a token-weighted window.
 - **Orchestrator dual-rate**: tracks underlying models via `transcript_path` (e.g. `N~85/H~150t/s`).
+- **Responsive width**: adapts to `terminal_width` across 4 tiers (`full` → `compact` → `short` → `nano`) to avoid wrapping on narrow splits.
 
 **One-line install:**
 
